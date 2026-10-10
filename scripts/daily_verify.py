@@ -5,6 +5,7 @@ Produces daily/YYYY-MM-DD.md with real numbers. Only commits if the run
 completes; a failing suite is still committed (honest signal) but flagged.
 """
 import datetime
+import shutil
 import subprocess
 import sys
 import os
@@ -21,6 +22,16 @@ def run(cmd, timeout=300):
         return r.returncode, (r.stdout + r.stderr)[-3000:]
     except subprocess.TimeoutExpired:
         return -1, "TIMEOUT"
+    except FileNotFoundError as e:
+        return -2, f"NOT FOUND: {cmd[0]} ({e})"
+
+
+def conform_cmd():
+    # console script may not be on PATH (PEP 668 / env reset); the module
+    # entry point is equivalent when run with cwd=ROOT
+    if shutil.which("dhp-conform"):
+        return ["dhp-conform"]
+    return [sys.executable, "-m", "dhp.conform"]
 
 
 def main():
@@ -29,7 +40,7 @@ def main():
     # 1. pytest
     rc1, out1 = run([sys.executable, "-m", "pytest", "tests/", "-q"], 600)
     # 2. conformance
-    rc2, out2 = run(["dhp-conform"], 300)
+    rc2, out2 = run(conform_cmd(), 300)
 
     # extract the headline numbers
     pytest_line = [l for l in out1.splitlines()
