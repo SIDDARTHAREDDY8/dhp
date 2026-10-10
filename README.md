@@ -14,9 +14,23 @@ MCP standardized agent↔tool. A2A standardized agent↔agent. **DHP is the miss
 pip install dhp-protocol
 ```
 
+**One-line install** (pip + MCP registration + data dir):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SIDDARTHAREDDY8/dhp/main/install.sh | bash
+```
+
+**Direct into your agent:**
+
+| Tool | Command |
+|---|---|
+| Claude Code | `claude mcp add dhp -- dhp-mcp --root ~/.dhp` |
+| Cursor | [one-click install](https://cursor.com/en/install-mcp?name=dhp&config=eyJjb21tYW5kIjogImRocC1tY3AiLCAiYXJncyI6IFsiLS1yb290IiwgIn4vLmRocCJdfQ) |
+| Windsurf / Zed | copy the JSON from [MCP_SETUP.md](MCP_SETUP.md) |
+| Any MCP client | `dhp-mcp --root ~/.dhp` (stdio) |
+
 **Other ways to run:** [Docker](Dockerfile) (`docker compose up -d` for
-supervisor + transport server) · [MCP clients](MCP_SETUP.md) (Claude
-Desktop, Cursor, Windsurf) · from source (`git clone` + `pip install -e ".[dev]"`)
+supervisor + transport server) · from source (`git clone` + `pip install -e ".[dev]"`)
 
 ---
 
