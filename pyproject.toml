@@ -17,9 +17,9 @@ dependencies = []
 # MCP server needs:  pip install "mcp>=1.0"
 
 [project.optional-dependencies]
-a2a = ["a2a-sdk>=1.0"]
+a2a = ["a2a-sdk>=1.2.2"]
 mcp = ["mcp>=1.0"]
-dev = ["a2a-sdk>=1.0", "mcp>=1.0", "pytest>=7.0"]
+dev = ["a2a-sdk>=1.2.2", "mcp>=1.0", "pytest>=7.0"]
 
 [project.scripts]
 dhp-supervisor = "dhp.supervisor3_watch:main"
