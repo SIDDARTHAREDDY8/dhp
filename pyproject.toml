@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dhp"
-version = "1.1.0"
+name = "dhp-protocol"
+version = "1.1.1"
 description = "Durable Handoff Protocol — agent work that survives worker death"
 readme = "README.md"
 requires-python = ">=3.10"
