@@ -157,15 +157,27 @@ def test_transport_chaos_log(tmp_root, store, hid):
 
 
 def test_disk_full_surfaces_cleanly(tmp_root, store, hid):
-    """Read-only store dir: writes raise, reads still work."""
+    """Read-only store dir: writes raise, reads still work.
+
+    The store holds an open WAL file descriptor, and chmod cannot
+    block writes to an already-open file — so we close the connection
+    and remove WAL artifacts first. A fresh connection must then
+    create the WAL, which the read-only directory blocks.
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
     ctx = dhp.claim(store, hid, "w1")
     ctx.checkpoint({"n": 1})
-    # Lock the whole directory (chmod on the db file alone is bypassed
-    # via the -wal file in WAL mode).
+    ctx.stop_heartbeat()
+    store.close()  # release the open WAL fd (fixture close is idempotent)
+    for suffix in ("-wal", "-shm"):
+        p = os.path.join(tmp_root, "dhp.sqlite3" + suffix)
+        if os.path.exists(p):
+            os.unlink(p)
     os.chmod(tmp_root, 0o555)
     try:
-        # Sanity probe: if we can still write, permissions aren't enforced
-        # here (e.g. running as root) — skip instead of false-failing.
+        # Sanity probe: if we can still create files, permissions aren't
+        # enforced here (e.g. running as root) — skip, don't false-fail.
         probe = os.path.join(tmp_root, ".writetest")
         try:
             with open(probe, "w") as f:
@@ -174,9 +186,19 @@ def test_disk_full_surfaces_cleanly(tmp_root, store, hid):
             pytest.skip("file permissions not enforced in this environment")
         except OSError:
             pass
+        # Fresh connection must create the WAL for its DDL -> raises.
         with pytest.raises(Exception):
-            ctx.checkpoint({"n": 2})
-        # reads unaffected
-        assert dhp.last_checkpoint(store, hid) == {"n": 1}
+            dhp.Store(tmp_root)
+        # Reads unaffected (immutable read-only URI: skips WAL recovery,
+        # which would otherwise need a write).
+        cx = _sqlite3.connect(
+            f"file:{tmp_root}/dhp.sqlite3?immutable=1", uri=True)
+        try:
+            row = cx.execute(
+                "SELECT state_json FROM checkpoints WHERE hid=?"
+                " ORDER BY seq DESC LIMIT 1", (hid,)).fetchone()
+        finally:
+            cx.close()
+        assert _json.loads(row[0]) == {"n": 1}
     finally:
         os.chmod(tmp_root, 0o755)
