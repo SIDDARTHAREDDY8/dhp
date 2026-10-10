@@ -190,6 +190,106 @@ def dhp_health() -> str:
         return _err(e)
 
 
+@mcp.tool(description="Record a side effect by step_id. First write wins; "
+          "returns recorded=true if this call stored it, false if a "
+          "previous attempt already did (do NOT re-fire the effect).")
+def dhp_record_effect(handoff_id: str, worker_id: str,
+                      step_id: str, result: Dict[str, Any]) -> str:
+    try:
+        r = _runner(worker_id)
+        recorded = r.store.record_effect(V.check_hid(handoff_id),
+                                         step_id, result)
+        return _ok(recorded=recorded)
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Check whether a side effect already happened. "
+          "Returns the recorded result, or null. Call before re-executing "
+          "a side effect after recovery.")
+def dhp_effect_done(handoff_id: str, step_id: str) -> str:
+    try:
+        return _ok(result=_store().get_effect(V.check_hid(handoff_id),
+                                              step_id))
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Record spend in USD against the handoff budget. "
+          "The supervisor fails the handoff closed on budget breach.")
+def dhp_note_spend(handoff_id: str, worker_id: str,
+                   usd: float) -> str:
+    try:
+        r = _runner(worker_id)
+        hid = V.check_hid(handoff_id)
+        fence = _fence(hid, worker_id)
+        r._bump(hid, fence, spend=usd)
+        return _ok()
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Report an activity digest (hash of tool name + args). "
+          "The supervisor orphans the handoff as stalled if the digest "
+          "repeats with no new checkpoint (livelock detection).")
+def dhp_note_activity(handoff_id: str, worker_id: str,
+                      digest: str) -> str:
+    try:
+        r = _runner(worker_id)
+        hid = V.check_hid(handoff_id)
+        fence = _fence(hid, worker_id)
+        n = r.store.note_progress(hid, digest)["repeat_count"]
+        return _ok(repeat_count=n)
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Request approval for a destructive/financial action. "
+          "Fail-closed: returns an approval_id; the action must NOT run "
+          "until dhp_await_approval reports approved.")
+def dhp_request_approval(handoff_id: str, worker_id: str,
+                         action_class: str,
+                         details: Dict[str, Any]) -> str:
+    try:
+        r = _runner(worker_id)
+        hid = V.check_hid(handoff_id)
+        fence = _fence(hid, worker_id)
+        aid = r.store.request_approval(hid, action_class, details)
+        return _ok(approval_id=aid)
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Check an approval's status: pending/approved/"
+          "denied/expired. Only approved means the action may run.")
+def dhp_approval_status(approval_id: str) -> str:
+    try:
+        ap = _store().get_approval(approval_id)
+        if ap is None:
+            return _err(ValueError("unknown approval_id"))
+        return _ok(status=ap["status"], action_class=ap["action_class"])
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Approve a pending approval request "
+          "(human / policy engine).")
+def dhp_approve(approval_id: str) -> str:
+    try:
+        return _ok(decided=_store().decide_approval(approval_id, True))
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(description="Deny a pending approval request "
+          "(human / policy engine).")
+def dhp_deny(approval_id: str) -> str:
+    try:
+        return _ok(decided=_store().decide_approval(approval_id, False))
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="DHP MCP server")
     ap.add_argument("--root", required=True,

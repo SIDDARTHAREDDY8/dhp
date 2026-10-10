@@ -34,6 +34,11 @@ class DHPConfig:
         default_factory=lambda: _env_float("DHP_SUPERVISOR_SCAN_S", 1.0))
     leader_ttl_s: float = field(
         default_factory=lambda: _env_float("DHP_LEADER_TTL_S", 5.0))
+    # stall detection: alive but making no progress
+    stall_timeout_s: float = field(
+        default_factory=lambda: _env_float("DHP_STALL_TIMEOUT_S", 120.0))
+    stall_max_repeats: int = field(
+        default_factory=lambda: _env_int("DHP_STALL_MAX_REPEATS", 10))
     # safety bounds
     max_checkpoint_bytes: int = field(
         default_factory=lambda: _env_int("DHP_MAX_CHECKPOINT_BYTES",

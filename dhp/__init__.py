@@ -114,7 +114,24 @@ def status(store: StoreBackend, hid: str) -> dict:
         "checkpoints": len(ex["checkpoints"]),
         "attempt": ex.get("attempt", 0),
         "owner": own["holder"] if own else None,
+        "effects": store.effect_count(hid),
+        "approvals": store.approvals_for(hid),
+        "steps": ex.get("steps", 0),
+        "spend_usd": ex.get("spend_usd", 0.0),
     }
     if ex["status"] == "completed":
         out["result"] = env["delivery"]["result"]
+    if ex.get("error"):
+        out["error"] = ex["error"]
     return out
+
+
+def approve(store: StoreBackend, approval_id: str) -> bool:
+    """Approve a pending approval request (human / policy engine).
+    Returns True if the decision was recorded."""
+    return store.decide_approval(approval_id, True)
+
+
+def deny(store: StoreBackend, approval_id: str) -> bool:
+    """Deny a pending approval request. Returns True if recorded."""
+    return store.decide_approval(approval_id, False)

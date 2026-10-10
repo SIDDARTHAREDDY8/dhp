@@ -264,6 +264,48 @@ with dhp.recover(store, hid, worker_id="w2") as ctx:# recover orphaned work
     ...
 
 dhp.status(store, hid)                              # status/owner/checkpoints
+dhp.approve(store, approval_id)                     # approve a gated action
+dhp.deny(store, approval_id)                        # deny it (fail-closed)
+```
+
+### Reliability primitives (v1.2)
+
+**Effect log — no duplicate side effects.** Record each side effect by step ID; the first write wins, and the standby checks before re-firing:
+
+```python
+with dhp.claim(store, hid, worker_id="w1") as ctx:
+    if not ctx.effect_done("charge-card"):
+        tx = charge_card(...)          # the side effect
+        ctx.record_effect("charge-card", {"tx": tx})
+```
+
+If the worker dies between the charge and the next checkpoint, the standby sees `effect_done("charge-card")` and skips it. No double-charge.
+
+**Hard budget enforcement — no silent overrun.** Declare caps at dispatch; the supervisor kills the handoff closed when they're hit:
+
+```python
+hid = dhp.dispatch(store, ..., budget={"max_spend_usd": 5.0,
+                                       "max_steps": 1000,
+                                       "max_wallclock_s": 3600})
+with dhp.claim(store, hid, worker_id="w1") as ctx:
+    ctx.note_spend(0.42)   # real LLM API cost; supervisor fails closed on breach
+```
+
+**Stall detection — catch livelocks, not just death.** A worker can heartbeat forever while stuck. Report an activity digest; the supervisor orphans it as stalled when the digest repeats with no new checkpoint:
+
+```python
+ctx.note_activity(sha256(tool_name + args))  # per tool call
+```
+
+**Approval gates — mechanism, not prompt-as-policy.** Destructive/financial actions need an external approval record. Fail-closed on deny or timeout:
+
+```python
+try:
+    ctx.request_approval("destructive", {"cmd": "drop table users"})
+except ApprovalRequired as e:
+    approval_id = str(e).split(": ")[-1]
+# human/policy engine: dhp.approve(store, approval_id)
+ctx.await_approval(approval_id)  # raises ApprovalDenied on deny/timeout
 ```
 
 ### Cross-host shipping
@@ -294,7 +336,9 @@ shipper.ship_checkpoint(hid, seq, state)             # verified server-side
 
 `dhp_dispatch` · `dhp_claim` · `dhp_checkpoint` · `dhp_heartbeat` ·
 `dhp_complete` · `dhp_recover` · `dhp_status` · `dhp_last_checkpoint` ·
-`dhp_health`
+`dhp_health` · `dhp_record_effect` · `dhp_effect_done` · `dhp_note_spend` ·
+`dhp_note_activity` · `dhp_request_approval` · `dhp_approval_status` ·
+`dhp_approve` · `dhp_deny`
 
 ## Measured Performance
 

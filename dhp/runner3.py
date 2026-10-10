@@ -21,7 +21,8 @@ from . import envelope as E
 from .config import DHPConfig, DEFAULT
 from .errors import (
     DHPError, StateError, BudgetExceeded, FencingError, TamperError,
-    UnknownHandoff, ValidationError,
+    UnknownHandoff, ValidationError, ApprovalRequired, ApprovalDenied,
+    StallDetected,
 )
 from .store import Store, OwnershipLost, LeaseLost
 from . import log as dhp_log
@@ -109,6 +110,74 @@ class TaskContext:
 
     def note_step(self, n: int = 1) -> None:
         self._runner._bump(self.hid, self.fence, steps=n)
+
+    def note_spend(self, usd: float) -> None:
+        """Record real spend (LLM API cost). Supervisor kills on
+        budget exhaustion — fail closed, no silent overrun."""
+        if usd < 0:
+            raise ValidationError("spend cannot be negative")
+        self._runner._bump(self.hid, self.fence, spend=usd)
+
+    # ---- effect log: idempotency keyed by step_id ----
+    def record_effect(self, step_id: str, result: Any) -> bool:
+        """Record that a side effect happened. First write wins:
+        returns True if this call recorded it, False if a previous
+        attempt (possibly a dead worker) already did. Check
+        effect_done() before re-executing a side effect."""
+        self._runner._check_owner(self.hid, self.fence)
+        return self._runner.store.record_effect(self.hid, step_id, result)
+
+    def effect_done(self, step_id: str) -> Optional[Any]:
+        """Return the recorded result if this step already executed,
+        else None. The standby calls this on resume instead of
+        blindly re-firing the side effect."""
+        self._runner._check_owner(self.hid, self.fence)
+        return self._runner.store.get_effect(self.hid, step_id)
+
+    # ---- progress reporting (stall detection) ----
+    def note_activity(self, digest: str) -> int:
+        """Report an activity digest (e.g. sha256 of tool name + args).
+        Returns the repeat count: a high count with no new checkpoint
+        means livelock, and the supervisor will orphan as stalled."""
+        self._runner._check_owner(self.hid, self.fence)
+        return self._runner.store.note_progress(
+            self.hid, digest)["repeat_count"]
+
+    # ---- approval gates for irreversible actions ----
+    def request_approval(self, action_class: str, details: Dict[str, Any],
+                         timeout_s: float = 300.0) -> str:
+        """Create a pending approval record and raise ApprovalRequired
+        (fail-closed). An external approver (human/policy engine) decides
+        via dhp.approve()/dhp.deny(); the worker then calls
+        await_approval()."""
+        self._runner._check_owner(self.hid, self.fence)
+        if action_class in ("financial", "destructive"):
+            aid = self._runner.store.request_approval(
+                self.hid, action_class, details, timeout_s)
+            raise ApprovalRequired(
+                f"{action_class} action needs approval: {aid}")
+        return ""
+
+    def await_approval(self, approval_id: str,
+                       poll_s: float = 1.0) -> bool:
+        """Block until the approval is decided or expires. Returns True
+        if approved; raises ApprovalDenied on deny/timeout (fail-closed)."""
+        self._runner._check_owner(self.hid, self.fence)
+        import time as _time
+        while True:
+            ap = self._runner.store.get_approval(approval_id)
+            if ap is None:
+                raise ValidationError("unknown approval_id")
+            if ap["status"] == "approved":
+                return True
+            if ap["status"] in ("denied", "expired"):
+                raise ApprovalDenied(
+                    f"approval {approval_id} {ap['status']}")
+            if _time.time() > ap["expires_at"]:
+                self._runner.store.expire_approvals()
+                raise ApprovalDenied(
+                    f"approval {approval_id} timed out")
+            _time.sleep(poll_s)
 
     def complete(self, result: Any) -> None:
         try:
@@ -248,7 +317,10 @@ class Runner3:
     def checkpoint(self, hid: str, state: Any, fence: int) -> int:
         self._check_owner(hid, fence)
         V.check_checkpoint_state(state, self.cfg)
-        return self.store.add_checkpoint(hid, state)
+        seq = self.store.add_checkpoint(hid, state)
+        # progress counts: a checkpoint resets the stall clock
+        self.store.note_checkpoint_progress(hid)
+        return seq
 
     def _bump(self, hid: str, fence: int, steps: int = 0,
               spend: float = 0.0) -> None:

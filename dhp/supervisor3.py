@@ -116,7 +116,7 @@ class Supervisor3:
         return self.store.get_leadership()
 
     # ---- scan (leader only) ----
-    def orphan(self, hid: str) -> Dict:
+    def orphan(self, hid: str, reason: str = "lease-expired") -> Dict:
         """Force-orphan: CAS the ownership row to __orphaned__ (fence+1).
         The worker's cached fence is now stale — it is fenced out even
         if it is still alive."""
@@ -137,10 +137,12 @@ class Supervisor3:
             return {"hid": hid, "action": "dlq", "attempt": ex["attempt"]}
         ex["status"] = "orphaned"
         ex["orphaned_at"] = time.time()
+        ex["orphan_reason"] = reason
         self.store.save_envelope(hid, env)
         self.metrics.bump("orphans")
-        _logger.info("orphan %s: attempt=%d checkpoints=%d", hid[:12],
-                     ex["attempt"], len(ex["checkpoints"]))
+        _logger.info("orphan %s: reason=%s attempt=%d checkpoints=%d",
+                     hid[:12], reason, ex["attempt"],
+                     len(ex["checkpoints"]))
         for cb, name in ((self.on_orphan, "on_orphan"),
                          (self.provision, "provision")):
             if cb:
@@ -153,14 +155,48 @@ class Supervisor3:
         return {"hid": hid, "action": "orphaned", "attempt": ex["attempt"],
                 "checkpoints": len(ex["checkpoints"])}
 
+    def kill_on_budget(self, hid: str, reasons: list) -> Dict:
+        """Hard budget enforcement: fail the handoff closed. No silent
+        overrun — the spend stops here and the envelope says why."""
+        V.check_hid(hid)
+        env = self.store.get_envelope(hid)
+        ex = env["execution"]
+        if ex["status"] not in ("running", "orphaned"):
+            return {"hid": hid, "action": "already-terminal"}
+        ex["status"] = "failed"
+        ex["error"] = "budget exhausted: " + "; ".join(reasons)
+        ex["failed_at"] = time.time()
+        self.store.save_envelope(hid, env)
+        # release ownership so nothing keeps billing against it
+        own = self.store.get_ownership(hid)
+        if own:
+            self.store.release_ownership(hid, own["holder"], own["fence"])
+        self.metrics.bump("dlq")
+        _logger.warning("budget-kill %s: %s", hid[:12], ex["error"])
+        return {"hid": hid, "action": "budget-killed",
+                "reasons": reasons}
+
     def scan(self) -> List[Dict]:
         """One pass. Only the leader scans; followers return []."""
         try:
             if not self.ensure_leadership():
                 return []
             self.metrics.bump("scans")
-            return [self.orphan(hid)
-                    for hid in self.store.expired_leases()]
+            actions = [self.orphan(hid)
+                       for hid in self.store.expired_leases()]
+            # hard budget enforcement (fail closed)
+            for v in self.store.budget_violations():
+                actions.append(self.kill_on_budget(v["hid"], v["reasons"]))
+            # stall detection: alive but making no progress
+            for hid in self.store.stalled_handoffs(
+                    stall_timeout_s=self.cfg.stall_timeout_s,
+                    max_digest_repeats=self.cfg.stall_max_repeats):
+                actions.append(self.orphan(hid, reason="stalled"))
+            # expire stale approval requests
+            n_exp = self.store.expire_approvals()
+            if n_exp:
+                _logger.info("expired %d stale approvals", n_exp)
+            return actions
         except Exception as e:
             self.metrics.bump("errors")
             _logger.exception("supervisor %s: scan failed: %s",

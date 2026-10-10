@@ -50,6 +50,20 @@ class TamperError(DHPError):
     """Content-address verification failed (tampered or corrupt)."""
 
 
+# ---- approvals ----
+class ApprovalRequired(DHPError):
+    """Destructive/financial action needs approval first (fail-closed)."""
+
+
+class ApprovalDenied(DHPError):
+    """Approval was denied or timed out (fail-closed)."""
+
+
+# ---- stall detection ----
+class StallDetected(DHPError):
+    """Worker is alive but making no progress (livelocked)."""
+
+
 # ---- transport ----
 class TransportError(DHPError):
     pass

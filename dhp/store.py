@@ -32,7 +32,7 @@ from . import validate as V
 __all__ = ["Store", "SQLiteStore", "OwnershipLost", "LeaseLost",
            "SCHEMA_VERSION"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -67,6 +67,35 @@ CREATE TABLE IF NOT EXISTS leadership (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     holder TEXT NOT NULL,
     expires_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+-- v2: effect log (idempotency keyed by step_id)
+CREATE TABLE IF NOT EXISTS effects (
+    hid TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    at REAL NOT NULL,
+    PRIMARY KEY (hid, step_id)
+);
+CREATE INDEX IF NOT EXISTS idx_effects_hid ON effects(hid);
+-- v2: approval gates for irreversible actions
+CREATE TABLE IF NOT EXISTS approvals (
+    approval_id TEXT PRIMARY KEY,
+    hid TEXT NOT NULL,
+    action_class TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_hid ON approvals(hid);
+-- v2: progress tracking for stall detection
+CREATE TABLE IF NOT EXISTS progress (
+    hid TEXT PRIMARY KEY,
+    last_checkpoint_at REAL,
+    last_digest TEXT,
+    digest_repeat_count INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL
 );
 """
@@ -108,9 +137,14 @@ class Store(StoreBackend):
                 f"store schema v{row[0]} is newer than this dhp "
                 f"(v{SCHEMA_VERSION}); upgrade dhp first")
         elif row[0] < SCHEMA_VERSION:
-            raise ValidationError(
-                f"store schema v{row[0]} is older than v{SCHEMA_VERSION}; "
-                f"migration not implemented — export and reimport")
+            # v1 -> v2: additive tables only; CREATE TABLE IF NOT EXISTS
+            # in SCHEMA handles it. Record the migration.
+            self.cx.executescript(SCHEMA)
+            self.cx.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?,?)",
+                (SCHEMA_VERSION, time.time()))
+            _logger.info("store: migrated schema v%d -> v%d at %s",
+                         row[0], SCHEMA_VERSION, self.path)
 
     # ---- handoffs ----
     def create_handoff(self, hid: str, envelope: Dict[str, Any]) -> None:
@@ -361,6 +395,212 @@ class Store(StoreBackend):
                 "SELECT holder, expires_at FROM leadership WHERE id=1"
             ).fetchone()
             return {"holder": row[0], "expires_at": row[1]} if row else None
+
+    # ---- effect log (v2): idempotency keyed by step_id ----
+    def record_effect(self, hid: str, step_id: str,
+                      result: Dict[str, Any]) -> bool:
+        """Record a side effect. First write wins (INSERT OR IGNORE):
+        returns True if this call recorded it, False if already present.
+        The standby checks effect_done() before re-executing."""
+        V.check_hid(hid)
+        if not step_id or not isinstance(step_id, str):
+            raise ValidationError("step_id must be a non-empty string")
+        blob = json.dumps(result, sort_keys=True)
+        if len(blob.encode()) > self.cfg.max_checkpoint_bytes:
+            from .errors import OversizePayload
+            raise OversizePayload("effect result exceeds max size")
+        with self._lock:
+            cur = self.cx.execute(
+                "INSERT OR IGNORE INTO effects"
+                " (hid, step_id, result_json, at) VALUES (?,?,?,?)",
+                (hid, step_id, blob, time.time()))
+            return cur.rowcount > 0
+
+    def get_effect(self, hid: str,
+                   step_id: str) -> Optional[Dict[str, Any]]:
+        """Return the recorded result for step_id, or None."""
+        V.check_hid(hid)
+        with self._lock:
+            row = self.cx.execute(
+                "SELECT result_json FROM effects WHERE hid=? AND step_id=?",
+                (hid, step_id)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def effect_count(self, hid: str) -> int:
+        V.check_hid(hid)
+        with self._lock:
+            return self.cx.execute(
+                "SELECT COUNT(*) FROM effects WHERE hid=?",
+                (hid,)).fetchone()[0]
+
+    # ---- approval gates (v2) ----
+    def request_approval(self, hid: str, action_class: str,
+                         details: Dict[str, Any],
+                         timeout_s: float = 300.0) -> str:
+        """Create a pending approval record. Returns approval_id.
+        Fail-closed: the worker must await_approval() before acting."""
+        V.check_hid(hid)
+        if action_class not in ("read", "write", "financial",
+                                "destructive"):
+            raise ValidationError(
+                f"unknown action_class {action_class!r}")
+        import uuid
+        approval_id = f"apr-{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        blob = json.dumps(details, sort_keys=True)
+        with self._lock:
+            self.cx.execute(
+                "INSERT INTO approvals (approval_id, hid, action_class,"
+                " details_json, status, created_at, expires_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (approval_id, hid, action_class, blob, "pending",
+                 now, now + timeout_s))
+        _logger.info("approval %s requested: %s on %s", approval_id,
+                     action_class, hid[:12])
+        return approval_id
+
+    def get_approval(self, approval_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.cx.execute(
+                "SELECT approval_id, hid, action_class, details_json,"
+                " status, created_at, expires_at, decided_at"
+                " FROM approvals WHERE approval_id=?",
+                (approval_id,)).fetchone()
+            if not row:
+                return None
+            return {
+                "approval_id": row[0], "hid": row[1],
+                "action_class": row[2], "details": json.loads(row[3]),
+                "status": row[4], "created_at": row[5],
+                "expires_at": row[6], "decided_at": row[7],
+            }
+
+    def decide_approval(self, approval_id: str, approved: bool) -> bool:
+        """External decision (human/policy engine). Only pending→decided.
+        Returns True if the decision was recorded."""
+        now = time.time()
+        with self._lock:
+            cur = self.cx.execute(
+                "UPDATE approvals SET status=?, decided_at=?"
+                " WHERE approval_id=? AND status='pending'",
+                ("approved" if approved else "denied", now, approval_id))
+            return cur.rowcount > 0
+
+    def expire_approvals(self, now: Optional[float] = None) -> int:
+        """Mark expired pending approvals as expired. Returns count."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            cur = self.cx.execute(
+                "UPDATE approvals SET status='expired', decided_at=?"
+                " WHERE status='pending' AND expires_at < ?",
+                (now, now))
+            return cur.rowcount
+
+    def approvals_for(self, hid: str) -> List[Dict[str, Any]]:
+        V.check_hid(hid)
+        with self._lock:
+            rows = self.cx.execute(
+                "SELECT approval_id, action_class, status, created_at,"
+                " decided_at FROM approvals WHERE hid=? ORDER BY created_at",
+                (hid,)).fetchall()
+            return [{"approval_id": r[0], "action_class": r[1],
+                     "status": r[2], "created_at": r[3],
+                     "decided_at": r[4]} for r in rows]
+
+    # ---- progress tracking / stall detection (v2) ----
+    def note_progress(self, hid: str, digest: str) -> Dict[str, Any]:
+        """Worker reports an activity digest (e.g. hash of tool+args).
+        Returns {repeat_count, stalled_hint}. Same digest repeatedly
+        suggests a livelock."""
+        V.check_hid(hid)
+        now = time.time()
+        with self._lock:
+            row = self.cx.execute(
+                "SELECT last_digest, digest_repeat_count FROM progress"
+                " WHERE hid=?", (hid,)).fetchone()
+            if row is None:
+                self.cx.execute(
+                    "INSERT INTO progress (hid, last_digest,"
+                    " digest_repeat_count, updated_at)"
+                    " VALUES (?,?,1,?)", (hid, digest, now))
+                return {"repeat_count": 1}
+            if row[0] == digest:
+                n = row[1] + 1
+            else:
+                n = 1
+            self.cx.execute(
+                "UPDATE progress SET last_digest=?, digest_repeat_count=?,"
+                " updated_at=? WHERE hid=?", (digest, n, now, hid))
+            return {"repeat_count": n}
+
+    def note_checkpoint_progress(self, hid: str) -> None:
+        """Call when a checkpoint lands: resets the stall clock."""
+        V.check_hid(hid)
+        now = time.time()
+        with self._lock:
+            self.cx.execute(
+                "INSERT INTO progress (hid, last_checkpoint_at,"
+                " digest_repeat_count, updated_at)"
+                " VALUES (?,?,0,?)"
+                " ON CONFLICT(hid) DO UPDATE SET"
+                " last_checkpoint_at=excluded.last_checkpoint_at,"
+                " digest_repeat_count=0, updated_at=excluded.updated_at",
+                (hid, now, now))
+
+    def stalled_handoffs(self, now: Optional[float] = None,
+                         stall_timeout_s: float = 120.0,
+                         max_digest_repeats: int = 10) -> List[str]:
+        """Handoffs whose lease is alive (heartbeating) but which show
+        no checkpoint progress within stall_timeout_s, or whose
+        activity digest repeated max_digest_repeats times.
+        These are livelocked, not dead — heartbeats alone can't see them."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            rows = self.cx.execute(
+                "SELECT p.hid FROM progress p"
+                " JOIN ownership o ON o.hid = p.hid"
+                " JOIN handoffs h ON h.hid = p.hid"
+                " WHERE o.lease_expires_at >= ?"
+                " AND json_extract(h.envelope_json, '$.execution.status')"
+                "     = 'running'"
+                " AND ("
+                "   (p.last_checkpoint_at IS NOT NULL"
+                "    AND p.last_checkpoint_at < ?)"
+                "   OR p.digest_repeat_count >= ?"
+                " )",
+                (now, now - stall_timeout_s, max_digest_repeats))
+            return [r[0] for r in rows]
+
+    # ---- budget violations (v2) ----
+    def budget_violations(self,
+                          now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Running handoffs whose measured usage exceeds the contract
+        budget. The supervisor fails these closed."""
+        now = now if now is not None else time.time()
+        out = []
+        with self._lock:
+            rows = self.cx.execute(
+                "SELECT hid, envelope_json FROM handoffs"
+                " WHERE json_extract(envelope_json, '$.execution.status')"
+                "     = 'running'").fetchall()
+        for hid, blob in rows:
+            env = json.loads(blob)
+            ex, b = env["execution"], env["contract"]["budget"]
+            reasons = []
+            if ex.get("steps", 0) > b.get("max_steps", float("inf")):
+                reasons.append(
+                    f"steps {ex['steps']} > {b['max_steps']}")
+            if ex.get("spend_usd", 0.0) > b.get("max_spend_usd",
+                                                float("inf")):
+                reasons.append(
+                    f"spend ${ex['spend_usd']:.2f} >"
+                    f" ${b['max_spend_usd']:.2f}")
+            if (now - ex.get("claimed_at", now)) > b.get(
+                    "max_wallclock_s", float("inf")):
+                reasons.append("wallclock exceeded")
+            if reasons:
+                out.append({"hid": hid, "reasons": reasons})
+        return out
 
     def close(self) -> None:
         with self._lock:
