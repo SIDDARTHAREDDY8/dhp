@@ -14,6 +14,10 @@ MCP standardized agent↔tool. A2A standardized agent↔agent. **DHP is the miss
 pip install dhp-protocol
 ```
 
+**Other ways to run:** [Docker](Dockerfile) (`docker compose up -d` for
+supervisor + transport server) · [MCP clients](MCP_SETUP.md) (Claude
+Desktop, Cursor, Windsurf) · from source (`git clone` + `pip install -e ".[dev]"`)
+
 ---
 
 ## Table of Contents
