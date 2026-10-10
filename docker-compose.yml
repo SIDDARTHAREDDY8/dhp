@@ -1,0 +1,39 @@
+# Full DHP deployment: supervisor + transport server + a shared volume
+# for the store. Workers run anywhere and ship checkpoints to the
+# transport service.
+#
+#   docker compose up -d
+#   # dispatch from any host with the SDK, pointing NetShipper at
+#   # <this-host>:8471
+
+services:
+  supervisor:
+    build: .
+    image: dhp:1.1.1
+    command: ["dhp-supervisor", "/data", "sup1", "86400"]
+    volumes:
+      - dhp-data:/data
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+
+  transport:
+    build: .
+    image: dhp:1.1.1
+    command: ["dhp-transport", "/logs", "--port", "8471"]
+    ports:
+      - "8471:8471"
+    volumes:
+      - dhp-logs:/logs
+    environment:
+      # set the same token on every NetShipper worker
+      - DHP_TRANSPORT_TOKEN=${DHP_TRANSPORT_TOKEN:-}
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+
+volumes:
+  dhp-data:
+  dhp-logs:

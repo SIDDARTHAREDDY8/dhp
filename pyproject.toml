@@ -26,6 +26,7 @@ dhp-supervisor = "dhp.supervisor3_watch:main"
 dhp-conform = "dhp.conform:main"
 dhp-chaos = "dhp.chaos:main"
 dhp-mcp = "dhp.mcp_server:main"
+dhp-transport = "dhp.transport_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
