@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dhp"
+version = "1.1.0"
+description = "Durable Handoff Protocol — agent work that survives worker death"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "DHP contributors" }]
+keywords = ["agents", "durable-execution", "failover", "mcp", "a2a"]
+dependencies = []
+# a2a bridge is optional:
+#   pip install dhp[a2a]   -> a2a-sdk
+# MCP server needs:  pip install "mcp>=1.0"
+
+[project.optional-dependencies]
+a2a = ["a2a-sdk>=1.0"]
+mcp = ["mcp>=1.0"]
+dev = ["a2a-sdk>=1.0", "mcp>=1.0"]
+
+[project.scripts]
+dhp-supervisor = "dhp.supervisor3_watch:main"
+dhp-conform = "dhp.conform:main"
+dhp-chaos = "dhp.chaos:main"
+dhp-mcp = "dhp.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dhp*"]
