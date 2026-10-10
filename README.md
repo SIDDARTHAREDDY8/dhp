@@ -308,6 +308,32 @@ except ApprovalRequired as e:
 ctx.await_approval(approval_id)  # raises ApprovalDenied on deny/timeout
 ```
 
+### Failure-type-aware recovery (v1.3)
+
+Not all failures deserve a retry. The supervisor classifies at orphan time:
+
+- **Lease expired** (heartbeat timeout) → transient/infra → normal retry.
+- **Stalled** (livelock) → bad plan → after `max_stall_retries` (default 2), DLQ instead of another blind retry. A transient failure resets the stall counter.
+- **Schema validation failure** at `complete()` → DLQ with the typed error, not stuck "running".
+
+```python
+hid = dhp.dispatch(store, ..., max_stall_retries=1)
+```
+
+### Capability attenuation (v1.3)
+
+Declare what the handoff may touch; everything else is denied fail-closed, and every check is audited:
+
+```python
+hid = dhp.dispatch(store, ...,
+                   capabilities={"network": ["api.stripe.com"],
+                                 "filesystem": ["/tmp/work"]})
+
+with dhp.claim(store, hid, worker_id="w1") as ctx:
+    ctx.require_capability("network", "api.stripe.com")  # ok
+    ctx.require_capability("network", "evil.example.com")  # CapabilityDenied
+```
+
 ### Cross-host shipping
 
 ```python
@@ -338,7 +364,7 @@ shipper.ship_checkpoint(hid, seq, state)             # verified server-side
 `dhp_complete` · `dhp_recover` · `dhp_status` · `dhp_last_checkpoint` ·
 `dhp_health` · `dhp_record_effect` · `dhp_effect_done` · `dhp_note_spend` ·
 `dhp_note_activity` · `dhp_request_approval` · `dhp_approval_status` ·
-`dhp_approve` · `dhp_deny`
+`dhp_approve` · `dhp_deny` · `dhp_require_capability`
 
 ## Measured Performance
 
