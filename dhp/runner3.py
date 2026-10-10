@@ -179,6 +179,20 @@ class TaskContext:
                     f"approval {approval_id} timed out")
             _time.sleep(poll_s)
 
+    # ---- capability attenuation ----
+    def require_capability(self, domain: str, resource: str) -> None:
+        """Fail-closed: raise CapabilityDenied unless the handoff's
+        contract declares this (domain, resource). Call before touching
+        network, filesystem, or external services — ambient credentials
+        never enter the worker's scope undeclared."""
+        self._runner._check_owner(self.hid, self.fence)
+        if not self._runner.store.check_capability(
+                self.hid, domain, resource):
+            from .errors import CapabilityDenied
+            raise CapabilityDenied(
+                f"capability denied: {domain}:{resource} not in"
+                f" handoff {self.hid[:12]} contract")
+
     def complete(self, result: Any) -> None:
         try:
             self._runner.complete(self.hid, result, self.fence)
@@ -349,6 +363,15 @@ class Runner3:
         try:
             E.validate_result(env, result)
         except E.EnvelopeError as e:
+            # Bad output is a failure type, not a retry candidate:
+            # DLQ with the typed error instead of leaving it running.
+            env["execution"]["status"] = "failed"
+            env["execution"]["error"] = f"schema validation: {e}"
+            env["execution"]["failed_at"] = E.utcnow()
+            self._save(env)
+            self.store.release_ownership(hid, self.runner_id, fence)
+            _logger.warning("complete %s: schema failure → DLQ: %s",
+                            hid[:12], e)
             raise ValidationError(str(e)) from e
         env["execution"]["status"] = "completed"
         env["execution"]["completed_at"] = E.utcnow()

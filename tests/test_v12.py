@@ -196,3 +196,121 @@ def test_approvals_visible_in_status(tmp_path):
     assert len(st["approvals"]) == 1
     assert st["approvals"][0]["action_class"] == "destructive"
     ctx.release()
+
+
+# ---- failure-type-aware recovery ----
+def test_repeated_stalls_dlq_as_bad_plan(tmp_path):
+    """A livelocked plan must not blind-retry forever: after
+    max_stall_retries, the supervisor DLQs it as a bad plan."""
+    cfg = DHPConfig(lease_interval_s=0.2, lease_max_missed=30,
+                    supervisor_scan_s=0.1,
+                    stall_timeout_s=0.4, stall_max_repeats=2)
+    store = Store(str(tmp_path), cfg=cfg)
+    hid = dhp.dispatch(store, "test", {"x": 1}, {"type": "object"},
+                       max_stall_retries=1, cfg=cfg)
+    sup = Supervisor3(str(tmp_path), supervisor_id="sup1", cfg=cfg)
+
+    for attempt in range(2):
+        ctx = dhp.claim(store, hid, f"w{attempt}", cfg=cfg) \
+            if attempt == 0 else dhp.recover(store, hid, f"w{attempt}",
+                                             cfg=cfg)
+        ctx.checkpoint({"n": 0})
+        for _ in range(3):  # livelock: same digest, heartbeats alive
+            ctx.note_activity("same-digest")
+            ctx.heartbeat()
+            time.sleep(0.1)
+        ctx.stop_heartbeat()
+        actions = sup.scan()
+        st = dhp.status(store, hid)["status"]
+        if attempt == 0:
+            assert st == "orphaned", (actions, st)
+        else:
+            # second stall exceeds max_stall_retries=1 -> DLQ, not retry
+            assert st == "failed", (actions, st)
+            assert "bad plan" in dhp.status(store, hid)["error"]
+
+
+def test_transient_failure_resets_stall_count(tmp_path):
+    """A heartbeat-timeout (transient) after a stall resets the
+    bad-plan counter — infra blips don't poison the plan."""
+    cfg = DHPConfig(lease_interval_s=0.2, lease_max_missed=30,
+                    supervisor_scan_s=0.1,
+                    stall_timeout_s=0.4, stall_max_repeats=2)
+    store = Store(str(tmp_path), cfg=cfg)
+    hid = dhp.dispatch(store, "test", {"x": 1}, {"type": "object"},
+                       max_stall_retries=5, cfg=cfg)
+    sup = Supervisor3(str(tmp_path), supervisor_id="sup1", cfg=cfg)
+
+    # stall once
+    ctx = dhp.claim(store, hid, "w0", cfg=cfg)
+    ctx.checkpoint({"n": 0})
+    for _ in range(3):
+        ctx.note_activity("same-digest")
+        ctx.heartbeat()
+        time.sleep(0.1)
+    ctx.stop_heartbeat()
+    sup.scan()
+    assert dhp.status(store, hid)["status"] == "orphaned"
+
+    # recover, then die transiently (no heartbeat, no digest loop)
+    ctx2 = dhp.recover(store, hid, "w1", cfg=cfg)
+    ctx2.checkpoint({"n": 1})  # real progress
+    del ctx2  # dies without heartbeating
+    time.sleep(0.7)  # lease 0.2*30=6s won't expire; force via orphan path
+    # simulate transient orphan directly
+    env = store.get_envelope(hid)
+    assert env["execution"]["stall_count"] == 1
+    # transient orphan resets the counter
+    sup.orphan(hid, reason="lease-expired")
+    env = store.get_envelope(hid)
+    assert env["execution"]["stall_count"] == 0
+
+
+def test_schema_failure_dlq_with_typed_error(tmp_path):
+    """Bad output is a failure type, not a retry candidate: the handoff
+    is marked failed with the typed error instead of stuck running."""
+    store = Store(str(tmp_path))
+    hid = dhp.dispatch(store, "test", {"x": 1},
+                       {"type": "array", "items": {"type": "string"}})
+    ctx = dhp.claim(store, hid, "w1")
+    with pytest.raises(Exception):
+        ctx.complete({"not": "a list"})
+    st = dhp.status(store, hid)
+    assert st["status"] == "failed"
+    assert "schema validation" in st["error"]
+    ctx.stop_heartbeat()
+
+
+# ---- capability attenuation ----
+def test_capability_fail_closed(tmp_path):
+    from dhp.errors import CapabilityDenied
+    store = Store(str(tmp_path))
+    hid = dhp.dispatch(
+        store, "test", {"x": 1}, {"type": "object"},
+        capabilities={"network": ["api.stripe.com"],
+                      "filesystem": ["/tmp/work"]})
+    ctx = dhp.claim(store, hid, "w1")
+    # declared: granted
+    ctx.require_capability("network", "api.stripe.com")
+    # not declared: denied, fail-closed
+    with pytest.raises(CapabilityDenied):
+        ctx.require_capability("network", "evil.example.com")
+    with pytest.raises(CapabilityDenied):
+        ctx.require_capability("filesystem", "/etc/passwd")
+    # dhp's own primitives always allowed
+    ctx.require_capability("dhp", "checkpoint")
+    # audit trail records both
+    audit = store.capability_audit(hid)
+    assert len(audit) == 4
+    assert sum(1 for a in audit if a["granted"]) == 2
+    assert sum(1 for a in audit if not a["granted"]) == 2
+    ctx.release()
+
+
+def test_no_capabilities_denies_everything(tmp_path):
+    from dhp.errors import CapabilityDenied
+    store, hid = _handoff(tmp_path)
+    ctx = dhp.claim(store, hid, "w1")
+    with pytest.raises(CapabilityDenied):
+        ctx.require_capability("network", "api.stripe.com")
+    ctx.release()

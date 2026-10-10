@@ -57,8 +57,22 @@ def build(task_kind: str,
           parent_handoff_id: Optional[str] = None,
           trace_id: Optional[str] = None,
           created_by: str = "dhp/0.1",
-          idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+          idempotency_key: Optional[str] = None,
+          max_stall_retries: int = 2,
+          capabilities: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Construct a new pending handoff envelope (dict form)."""
+    contract = {
+        "output_schema": output_schema,
+        "acceptance": acceptance or [],
+        "deadline": deadline,
+        "budget": budget or {"max_steps": 100,
+                             "max_spend_usd": 10.0,
+                             "max_wallclock_s": 3600.0,
+                             "max_attempts": 3},
+        "max_stall_retries": max_stall_retries,
+    }
+    if capabilities:
+        contract["capabilities"] = capabilities
     env: Dict[str, Any] = {
         "version": VERSION,
         "task": {
@@ -66,15 +80,7 @@ def build(task_kind: str,
             "inputs": inputs,
             "input_hash": sha256_hex(canonical(inputs)),
         },
-        "contract": {
-            "output_schema": output_schema,
-            "acceptance": acceptance or [],
-            "deadline": deadline,
-            "budget": budget or {"max_steps": 100,
-                                 "max_spend_usd": 10.0,
-                                 "max_wallclock_s": 3600.0,
-                                 "max_attempts": 3},
-        },
+        "contract": contract,
         "provenance": {
             "parent_handoff_id": parent_handoff_id,
             "trace_id": trace_id or sha256_hex(canonical(

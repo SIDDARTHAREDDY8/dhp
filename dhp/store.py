@@ -32,7 +32,7 @@ from . import validate as V
 __all__ = ["Store", "SQLiteStore", "OwnershipLost", "LeaseLost",
            "SCHEMA_VERSION"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -98,6 +98,15 @@ CREATE TABLE IF NOT EXISTS progress (
     digest_repeat_count INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL
 );
+-- v3: capability audit trail
+CREATE TABLE IF NOT EXISTS capability_audit (
+    hid TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    granted INTEGER NOT NULL,
+    at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cap_audit_hid ON capability_audit(hid);
 """
 
 _logger = dhp_log.get_logger()
@@ -137,7 +146,7 @@ class Store(StoreBackend):
                 f"store schema v{row[0]} is newer than this dhp "
                 f"(v{SCHEMA_VERSION}); upgrade dhp first")
         elif row[0] < SCHEMA_VERSION:
-            # v1 -> v2: additive tables only; CREATE TABLE IF NOT EXISTS
+            # v1/v2 -> v3: additive tables only; CREATE TABLE IF NOT EXISTS
             # in SCHEMA handles it. Record the migration.
             self.cx.executescript(SCHEMA)
             self.cx.execute(
@@ -601,6 +610,46 @@ class Store(StoreBackend):
             if reasons:
                 out.append({"hid": hid, "reasons": reasons})
         return out
+
+    # ---- capability attenuation (v3) ----
+    def check_capability(self, hid: str, domain: str,
+                         resource: str) -> bool:
+        """Fail-closed capability check against the envelope's declared
+        scope. Every check is audited. Returns True if granted.
+
+        Capabilities are declared at dispatch, e.g.::
+            capabilities={"network": ["api.stripe.com"],
+                          "filesystem": ["/tmp/work"]}
+        A missing domain, or a resource not in the declared list,
+        denies. An empty/missing capabilities contract denies everything
+        except the 'dhp' domain (DHP's own primitives).
+        """
+        V.check_hid(hid)
+        granted = False
+        if domain == "dhp":
+            granted = True  # DHP's own primitives are always allowed
+        else:
+            env = self.get_envelope(hid)
+            caps = env.get("contract", {}).get("capabilities") or {}
+            allowed = caps.get(domain) or []
+            granted = resource in allowed
+        with self._lock:
+            self.cx.execute(
+                "INSERT INTO capability_audit"
+                " (hid, domain, resource, granted, at)"
+                " VALUES (?,?,?,?,?)",
+                (hid, domain, resource, 1 if granted else 0,
+                 time.time()))
+        return granted
+
+    def capability_audit(self, hid: str) -> List[Dict[str, Any]]:
+        V.check_hid(hid)
+        with self._lock:
+            rows = self.cx.execute(
+                "SELECT domain, resource, granted, at FROM capability_audit"
+                " WHERE hid=? ORDER BY at", (hid,)).fetchall()
+            return [{"domain": r[0], "resource": r[1],
+                     "granted": bool(r[2]), "at": r[3]} for r in rows]
 
     def close(self) -> None:
         with self._lock:

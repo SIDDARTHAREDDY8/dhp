@@ -62,6 +62,8 @@ _DEFAULT_BUDGET = {
     "max_attempts": 5,
 }
 
+_DEFAULT_MAX_STALL_RETRIES = 2
+
 
 def _runner(store: StoreBackend, worker_id: str = "api",
             cfg: DHPConfig = DEFAULT) -> Runner3:
@@ -70,6 +72,8 @@ def _runner(store: StoreBackend, worker_id: str = "api",
 
 def dispatch(store: StoreBackend, task_kind: str, inputs: dict,
              output_schema: dict, budget: dict | None = None,
+             capabilities: dict | None = None,
+             max_stall_retries: int = _DEFAULT_MAX_STALL_RETRIES,
              created_by: str = "dhp-api",
              cfg: DHPConfig = DEFAULT) -> str:
     """Create a durable handoff. Returns the handoff id."""
@@ -79,6 +83,8 @@ def dispatch(store: StoreBackend, task_kind: str, inputs: dict,
         inputs={"inline": inputs},
         output_schema=output_schema,
         budget={**_DEFAULT_BUDGET, **(budget or {})},
+        max_stall_retries=max_stall_retries,
+        capabilities=capabilities,
         created_by=created_by)
     return _runner(store, cfg=cfg).dispatch(env)
 

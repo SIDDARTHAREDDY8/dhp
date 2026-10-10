@@ -290,6 +290,25 @@ def dhp_deny(approval_id: str) -> str:
         return _err(e)
 
 
+@mcp.tool(description="Fail-closed capability check: verify the handoff's "
+          "contract grants (domain, resource) before touching network, "
+          "filesystem, or external services. Every check is audited.")
+def dhp_require_capability(handoff_id: str, worker_id: str,
+                           domain: str, resource: str) -> str:
+    try:
+        r = _runner(worker_id)
+        hid = V.check_hid(handoff_id)
+        fence = _fence(hid, worker_id)
+        # ownership check first
+        r._check_owner(hid, fence)
+        if not r.store.check_capability(hid, domain, resource):
+            return _err(ValueError(
+                f"capability denied: {domain}:{resource}"))
+        return _ok(granted=True)
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="DHP MCP server")
     ap.add_argument("--root", required=True,

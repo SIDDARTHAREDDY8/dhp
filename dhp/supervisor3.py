@@ -119,7 +119,13 @@ class Supervisor3:
     def orphan(self, hid: str, reason: str = "lease-expired") -> Dict:
         """Force-orphan: CAS the ownership row to __orphaned__ (fence+1).
         The worker's cached fence is now stale — it is fenced out even
-        if it is still alive."""
+        if it is still alive.
+
+        Failure-type-aware: the orphan reason drives recovery.
+        - lease-expired → transient/infra → normal retry path.
+        - stalled → bad plan → after max_stall_retries, DLQ instead of
+          another blind retry (retrying a livelocked plan wastes budget).
+        """
         V.check_hid(hid)
         if not self.store.force_orphan(hid, ORPHANED_HOLDER):
             return {"hid": hid, "action": "already-orphaned-or-released"}
@@ -135,6 +141,24 @@ class Supervisor3:
             _logger.warning("orphan %s: DLQ (attempt %d >= max %d)",
                             hid[:12], ex["attempt"], max_att)
             return {"hid": hid, "action": "dlq", "attempt": ex["attempt"]}
+        if reason == "stalled":
+            ex["stall_count"] = ex.get("stall_count", 0) + 1
+            max_stalls = env["contract"].get("max_stall_retries", 2)
+            if ex["stall_count"] > max_stalls:
+                ex["status"] = "failed"
+                ex["error"] = (
+                    f"livelock: stalled {ex['stall_count']}x — bad plan,"
+                    f" not transient → DLQ (not another blind retry)")
+                self.store.save_envelope(hid, env)
+                self.metrics.bump("dlq")
+                _logger.warning("orphan %s: DLQ bad-plan (%d stalls)",
+                                hid[:12], ex["stall_count"])
+                return {"hid": hid, "action": "dlq",
+                        "reason": "bad-plan",
+                        "stall_count": ex["stall_count"]}
+        else:
+            # transient/infra failure resets the stall counter
+            ex["stall_count"] = 0
         ex["status"] = "orphaned"
         ex["orphaned_at"] = time.time()
         ex["orphan_reason"] = reason

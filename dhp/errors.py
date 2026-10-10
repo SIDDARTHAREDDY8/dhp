@@ -64,6 +64,11 @@ class StallDetected(DHPError):
     """Worker is alive but making no progress (livelocked)."""
 
 
+# ---- capabilities ----
+class CapabilityDenied(DHPError):
+    """Action outside the handoff's declared capability scope."""
+
+
 # ---- transport ----
 class TransportError(DHPError):
     pass
