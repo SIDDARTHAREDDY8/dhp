@@ -34,8 +34,41 @@ def conform_cmd():
     return [sys.executable, "-m", "dhp.conform"]
 
 
+def ensure_pytest(timeout=180):
+    """Cron worker environments may arrive without pytest installed (the
+    2026-10-10 run failed exactly this way). If the import is missing,
+    install it for the current user, then re-check. Returns (ok, note)."""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("pytest") is not None:
+            return True, "pytest already present"
+    except Exception:
+        pass
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet", "--user",
+         "pytest"],
+        cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    tail = (r.stdout + r.stderr)[-500:].strip()
+    if r.returncode == 0:
+        return True, "pytest bootstrapped via `pip install --user pytest`"
+    # PEP 668 externally-managed environments refuse --user installs; the
+    # cron host (Ubuntu 24.04, EXTERNALLY-MANAGED) needs the explicit flag.
+    if "externally-managed-environment" in tail.lower() or "break-system-packages" in tail.lower():
+        r2 = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet",
+             "--break-system-packages", "pytest"],
+            cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+        if r2.returncode == 0:
+            return True, "pytest bootstrapped via `pip install --break-system-packages pytest` (PEP 668 host)"
+        tail = (r2.stdout + r.stderr)[-500:].strip()
+    return False, f"pytest bootstrap failed: {tail}"
+
+
 def main():
     os.makedirs(os.path.join(ROOT, "daily"), exist_ok=True)
+
+    # 0. make sure the suite can run at all (self-healing in bare envs)
+    _, pytest_note = ensure_pytest()
 
     # 1. pytest
     rc1, out1 = run([sys.executable, "-m", "pytest", "tests/", "-q"], 600)
@@ -46,7 +79,7 @@ def main():
     pytest_line = [l for l in out1.splitlines()
                    if "passed" in l or "failed" in l or "error" in l]
     conform_line = [l for l in out2.splitlines()
-                    if "passed" in l or "failed" in l]
+                   if "passed" in l or "failed" in l]
 
     status = "GREEN" if (rc1 == 0 and rc2 == 0) else "RED"
     lines = [
@@ -65,6 +98,8 @@ def main():
         f"- result: {conform_line[-1].strip() if conform_line else 'n/a'}",
         "",
         "## notes",
+        "",
+        f"- pytest env: {pytest_note}",
         "",
         ("All green — no action needed." if status == "GREEN"
          else "FAILURE — investigate before next release."),
