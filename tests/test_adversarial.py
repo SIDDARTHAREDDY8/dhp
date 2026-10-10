@@ -157,18 +157,26 @@ def test_transport_chaos_log(tmp_root, store, hid):
 
 
 def test_disk_full_surfaces_cleanly(tmp_root, store, hid):
-    """Read-only DB: writes raise, reads still work.
-    (Skipped as root: root bypasses file permissions.)"""
-    import os as _os
-    if _os.geteuid() == 0:
-        pytest.skip("root bypasses file permissions")
+    """Read-only store dir: writes raise, reads still work."""
     ctx = dhp.claim(store, hid, "w1")
     ctx.checkpoint({"n": 1})
-    os.chmod(os.path.join(tmp_root, "dhp.sqlite3"), 0o444)
+    # Lock the whole directory (chmod on the db file alone is bypassed
+    # via the -wal file in WAL mode).
+    os.chmod(tmp_root, 0o555)
     try:
+        # Sanity probe: if we can still write, permissions aren't enforced
+        # here (e.g. running as root) — skip instead of false-failing.
+        probe = os.path.join(tmp_root, ".writetest")
+        try:
+            with open(probe, "w") as f:
+                f.write("x")
+            os.unlink(probe)
+            pytest.skip("file permissions not enforced in this environment")
+        except OSError:
+            pass
         with pytest.raises(Exception):
             ctx.checkpoint({"n": 2})
         # reads unaffected
         assert dhp.last_checkpoint(store, hid) == {"n": 1}
     finally:
-        os.chmod(os.path.join(tmp_root, "dhp.sqlite3"), 0o644)
+        os.chmod(tmp_root, 0o755)
