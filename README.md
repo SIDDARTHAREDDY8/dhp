@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/dhp-protocol)](https://pypi.org/project/dhp-protocol/)
 [![Python versions](https://img.shields.io/pypi/pyversions/dhp-protocol)](https://pypi.org/project/dhp-protocol/)
 [![License: MIT](https://img.shields.io/github/license/SIDDARTHAREDDY8/dhp)](LICENSE)
+[![CI](https://github.com/SIDDARTHAREDDY8/dhp/actions/workflows/ci.yml/badge.svg)](https://github.com/SIDDARTHAREDDY8/dhp/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen)]()
 [![Conformance](https://img.shields.io/badge/conformance-10%2F10-brightgreen)]()
 
