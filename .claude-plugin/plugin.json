@@ -1,0 +1,12 @@
+{
+  "name": "dhp",
+  "version": "1.1.1",
+  "description": "Durable Handoff Protocol: agent work that survives worker death. Content-addressed handoffs with leases, checkpoints, supervisor recovery, fence tokens, and an MCP server for Claude Code, Cursor, and Windsurf.",
+  "author": {
+    "name": "Siddartha Reddy Chinthala",
+    "url": "https://github.com/SIDDARTHAREDDY8"
+  },
+  "homepage": "https://github.com/SIDDARTHAREDDY8/dhp",
+  "repository": "https://github.com/SIDDARTHAREDDY8/dhp",
+  "license": "MIT"
+}
