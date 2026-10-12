@@ -45,7 +45,7 @@ from .transport import (
 from .net import TransportServer, NetShipper
 from . import validate as _validate
 
-__version__ = "1.1.1"
+__version__ = "1.3.0"
 __all__ = [
     "Store", "StoreBackend", "Runner3", "TaskContext", "Supervisor3",
     "TransportServer", "NetShipper",

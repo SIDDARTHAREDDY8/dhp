@@ -196,7 +196,7 @@ A network chaos harness (`demo/net_chaos.py`) SIGKILLs workers mid-ship across r
 ```mermaid
 flowchart TB
     subgraph Interfaces
-        MCP[dhp-mcp<br/>8 MCP tools]
+        MCP[dhp-mcp<br/>18 MCP tools]
         SDK[Python SDK<br/>dhp.dispatch/claim/recover]
         A2A[A2A bridge<br/>stable Task ID]
     end
@@ -235,7 +235,7 @@ flowchart TB
 | `supervisor3.py` | Lease watchdog, orphaning, DLQ, leader election, metrics |
 | `transport.py` | Append-only JSON-lines log: ship/ingest with hash verification |
 | `net.py` | TCP transport: `TransportServer` + `NetShipper`, token auth, reconnect |
-| `mcp_server.py` | MCP server (8 tools + health) |
+| `mcp_server.py` | MCP server (18 tools + health) |
 | `a2a_bridge.py` | A2A durability substrate |
 | `config.py` / `errors.py` / `validate.py` / `log.py` | Tuning, typed errors, input validation, structured logging |
 
@@ -379,7 +379,7 @@ Not claims — chaos-tested numbers:
 | 20-agent MCP soak, 75% worker death rate | 20/20 completed |
 | Randomized SIGKILL chaos (14 worker + 5 supervisor kills) | all invariants held |
 
-Verification: **45 pytest tests** (lifecycle, concurrent CAS races, fuzzing, `kill -9` integrity, network transport) · **`dhp-conform`** 10/10 · **network chaos** green.
+Verification: **59 pytest tests** (lifecycle, concurrent CAS races, fuzzing, `kill -9` integrity, network transport, v1.2/v1.3) · **`dhp-conform`** 10/10 · **network chaos** green.
 
 ## Comparison
 
