@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "DHP contributors" }]
 keywords = ["agents", "durable-execution", "failover", "mcp", "a2a"]
-dependencies = ["jsonschema>=4.0"]
+dependencies = ["jsonschema>=4.26.0"]
 # a2a bridge is optional:
 #   pip install dhp[a2a]   -> a2a-sdk
 # MCP server needs:  pip install "mcp>=2.3.0"
