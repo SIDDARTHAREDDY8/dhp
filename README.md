@@ -6,6 +6,7 @@
 [![CI](https://github.com/SIDDARTHAREDDY8/dhp/actions/workflows/ci.yml/badge.svg)](https://github.com/SIDDARTHAREDDY8/dhp/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen)]()
 [![Conformance](https://img.shields.io/badge/conformance-10%2F10-brightgreen)]()
+[![SIDDARTHAREDDY8/dhp MCP server](https://glama.ai/mcp/servers/SIDDARTHAREDDY8/dhp/badges/score.svg)](https://glama.ai/mcp/servers/SIDDARTHAREDDY8/dhp)
 
 **Agent work that survives worker death.** When a worker is `kill -9`'d, OOM-killed, or its spot instance is reclaimed mid-run, DHP hands the work to a standby that resumes from the last checkpoint — zero rework, zero lost results.
 
